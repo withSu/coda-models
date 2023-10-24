@@ -18,9 +18,17 @@ docker image pull docker://artzha/coda-models
 docker run --gpus all --net host --rm -it artzha/coda-models
 ```
 
-3. Run inference. This command will publish predicted 3D bounding boxes for point clouds published over ROS on the `YOUR_POINT_CLOUD_TOPIC` topic. Uses 32 channel LiDAR by default.
+3. Run inference. This command will publish predicted 3D bounding boxes for point clouds published over ROS on the `YOUR_POINT_CLOUD_TOPIC` topic. Uses 32 channel LiDAR by default. The 3D bounding boxes will be published on the `/coda/bbox_3d` topic as a ROS MarkerArray.
 ```
-python tools/ros_demo.py --pc {YOUR_POINT_CLOUD_TOPIC}
+cd tools 
+python ros_demo.py --pc {YOUR_POINT_CLOUD_TOPIC}
+```
+
+By default, all relative custom paths should be relative to the tools subdirectory. It is always safe to specify an absolute file path. You can specify different model configuration paths or checkpoint files to use as follows:
+
+```
+cd tools
+python ros_demo.py --pc {YOUR_POINT_CLOUD_TOPIC} --cfg_file {ABSOLUTE_PATH_TO_YOUR_MODEL_CONFIG}.yaml --ckpt {ABSOLUTE_PATH_TO_YOUR_CHECKPOINT}.pth
 ```
 
 4. (Optional). Using script with custom LiDAR resolutions. Configure the command below to set the sensor resolution used by the container during inference.
