@@ -34,7 +34,9 @@ conda install ros-noetic-desktop
 
 <b>Model Inference (mandatory)</b>
 ```
-conda install -c "nvidia/label/cuda-11.3.0" cuda
+conda install -c "nvidia/label/cuda-11.3.1" cuda
+
+conda install -c conda-forge cudatoolkit-dev==11.3.1
 
 conda install pytorch==1.10.0 torchvision==0.11.0 torchaudio==0.10.0 cudatoolkit=11.3 -c pytorch -c conda-forge
 
