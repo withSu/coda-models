@@ -2,32 +2,57 @@ import numpy as np
 
 
 def get_calib_from_file(calib_file, use_coda=False):
-    with open(calib_file) as f:
-        lines = f.readlines()
+    import numpy as np
 
-    if use_coda:
-        obj = lines[0].strip().split(' ')[1:]
-        P2 = np.array(obj, dtype=np.float32)
-        obj = lines[1].strip().split(' ')[1:]
-        P3 = np.array(obj, dtype=np.float32)
-        obj = lines[2].strip().split(' ')[1:]
-        R0 = np.array(obj, dtype=np.float32)
-        obj = lines[3].strip().split(' ')[1:]
-        Tr_velo_to_cam = np.array(obj, dtype=np.float32)
+    with open(calib_file, 'r') as f:
+        lines = f.read().strip().splitlines()
+
+    def has_prefix(p):
+        return any(ln.startswith(p + ':') for ln in lines)
+
+    def parse_line(prefix, expected_len):
+        ln = next((ln for ln in lines if ln.startswith(prefix + ':')), None)
+        assert ln is not None, f'{prefix}: line missing in {calib_file}'
+        # 콜론 뒤만 파싱 (정규식이 'R0'의 0까지 집계하는 문제 방지)
+        vals = np.fromstring(ln.split(':', 1)[1], sep=' ')
+        # 길이 보정(넘치면 자르고, 모자라면 0으로 패딩)
+        if vals.size > expected_len:
+            vals = vals[:expected_len]
+        elif vals.size < expected_len:
+            vals = np.pad(vals, (0, expected_len - vals.size))
+        return vals
+
+    # P2, P3
+    P2 = parse_line('P2', 12)
+    if has_prefix('P3'):
+        P3 = parse_line('P3', 12)
     else:
-        obj = lines[2].strip().split(' ')[1:]
-        P2 = np.array(obj, dtype=np.float32)
-        obj = lines[3].strip().split(' ')[1:]
-        P3 = np.array(obj, dtype=np.float32)
-        obj = lines[4].strip().split(' ')[1:]
-        R0 = np.array(obj, dtype=np.float32)
-        obj = lines[5].strip().split(' ')[1:]
-        Tr_velo_to_cam = np.array(obj, dtype=np.float32)
+        # P3 없으면 P2를 복제 (일부 변환 파이프라인은 P3 미생성)
+        P3 = P2.copy()
 
-    return {'P2': P2.reshape(3, 4),
-            'P3': P3.reshape(3, 4),
-            'R0': R0.reshape(3, 3),
-            'Tr_velo2cam': Tr_velo_to_cam.reshape(3, 4)}
+    # R0 또는 R0_rect 둘 다 허용
+    if has_prefix('R0'):
+        R0 = parse_line('R0', 9)
+    elif has_prefix('R0_rect'):
+        R0 = parse_line('R0_rect', 9)
+    else:
+        # 없으면 단위행렬
+        R0 = np.eye(3, dtype=np.float32).reshape(-1)
+
+    # Tr_velo_to_cam (이름이 Tr_velo2cam으로 저장된 코드도 있어 호환)
+    if has_prefix('Tr_velo_to_cam'):
+        Tr = parse_line('Tr_velo_to_cam', 12)
+    elif has_prefix('Tr_velo2cam'):
+        Tr = parse_line('Tr_velo2cam', 12)
+    else:
+        raise AssertionError(f'Tr_velo_to_cam line missing in {calib_file}')
+
+    return {
+        'P2': P2.reshape(3, 4),
+        'P3': P3.reshape(3, 4),
+        'R0': R0.reshape(3, 3),
+        'Tr_velo2cam': Tr.reshape(3, 4),  # Calibration 클래스가 이 키를 기대하는 경우가 많음
+    }
 
 
 class Calibration(object):

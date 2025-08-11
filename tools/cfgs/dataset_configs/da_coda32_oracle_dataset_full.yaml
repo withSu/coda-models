@@ -1,16 +1,18 @@
 DATASET: 'CODataset'
-DATA_PATH: '../data/coda32_allclass_full'
+DATA_PATH: '/home/a/ros2_ws/coda-models/data/coda32_allclass_full'   # ← 절대경로
 
 POINT_CLOUD_RANGE: [-75.2, -75.2, -2, 75.2, 75.2, 4]
 
 DATA_SPLIT: {
-    'train': train,
-    'test': val
+    'train': 'train',
+    'val': 'val',
+    'test': 'test'
 }
 
 INFO_PATH: {
-    'train': [coda_infos_train.pkl],
-    'test': [coda_infos_val.pkl],
+    'train': ['coda_infos_train.pkl'],
+    'val':   ['coda_infos_val.pkl'],
+    'test':  ['coda_infos_test.pkl']
 }
 
 DATA_AUGMENTOR:

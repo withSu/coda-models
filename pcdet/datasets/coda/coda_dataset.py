@@ -11,35 +11,38 @@ from ..dataset import DatasetTemplate
 
 class CODataset(DatasetTemplate):
     def __init__(self, dataset_cfg, class_names, training=True, root_path=None, logger=None, ps_label_dir=None, use_sorted_imageset=False):
-        """
-        Args:
-            root_path:
-            dataset_cfg:
-            class_names:
-            training:
-            logger:
-        """
         super().__init__(
             dataset_cfg=dataset_cfg, class_names=class_names, training=training, root_path=root_path, logger=logger, 
             ps_label_dir=ps_label_dir
         )
+        print('>>> INIT CODataset')
+        print('dataset_cfg:', dataset_cfg)
+        print('dataset_cfg.DATA_SPLIT:', dataset_cfg.DATA_SPLIT)
+        print('self.mode:', self.mode)
+        print('self.split (before set_sample_id_list):', dataset_cfg.DATA_SPLIT[self.mode])
+        print('root_path:', root_path)
 
-        self.use_sorted_imageset=use_sorted_imageset
+        self.use_sorted_imageset = use_sorted_imageset
         self.split = self.dataset_cfg.DATA_SPLIT[self.mode]
-        self.root_split_path = self.root_path / ('training' if self.split != 'test' else 'testing')
-
-        # Set sample idx split from imagesets, sorts if using demo
-        self.set_sample_id_list(self.split)
+        if self.split == 'train':
+            split_dir = 'training'
+        elif self.split == 'val':
+            split_dir = 'validation'
+        else:  # 'test'
+            split_dir = 'testing'
+        self.root_split_path = self.root_path / split_dir
+        
+        self.set_sample_id_list(self.split)  # 이 줄이 반드시 필요함!!
 
         self.coda_infos = []
-        self.include_coda_data(self.mode)
+        self.include_coda_data(self.split)
 
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.coda_infos = self.balanced_infos_resampling(self.coda_infos)
 
-        # Build idx to imageset idx map
         if self.use_sorted_imageset:
             self.build_idx_to_imageset_map()
+
 
     def include_coda_data(self, mode):
         """
@@ -133,15 +136,30 @@ class CODataset(DatasetTemplate):
         self.coda_infos = all_coda_infos
 
     def set_sample_id_list(self, split):
-        split_dir = self.root_path / 'ImageSets' / (self.split + '.txt')
-        self.sample_id_list = [x.strip() for x in open(split_dir).readlines()] if split_dir.exists() else None
+        split_file = self.root_path / 'ImageSets' / f'{split}.txt'
+        print(f'>>> Looking for split file: {split_file}')
+        if split_file.exists():
+            with open(split_file, 'r') as f:
+                self.sample_id_list = [line.strip() for line in f.readlines()]
+            print(f'>>> Found {len(self.sample_id_list)} samples for split={split}')
+        else:
+            print('>>> Split file does not exist!')
+            self.sample_id_list = None
 
     def set_split(self, split):
         super().__init__(
             dataset_cfg=self.dataset_cfg, class_names=self.class_names, training=self.training, root_path=self.root_path, logger=self.logger
         )
         self.split = split
-        self.root_split_path = self.root_path / ('training' if self.split != 'test' else 'testing')
+        # 변경
+        if self.split == 'train':
+            split_dir = 'training'
+        elif self.split == 'val':
+            split_dir = 'validation'
+        else:  # 'test'
+            split_dir = 'testing'
+        self.root_split_path = self.root_path / split_dir
+
         self.set_sample_id_list(split)
 
     def get_lidar(self, idx):
@@ -159,17 +177,16 @@ class CODataset(DatasetTemplate):
         if self.use_sorted_imageset:
             root_split_path = self.root_path / self.lidar_idx_subdir_map[idx]
 
-        img_file = root_split_path / 'image_0' / ('%s.jpg' % idx)
-        assert img_file.exists(), "Image file %s does not exist" % img_file
+        img_file = root_split_path / 'image_2' / f'{idx}.jpg'   # 여기!
+        assert img_file.exists(), f"Image file {img_file} does not exist"
         return np.array(io.imread(img_file).shape[:2], dtype=np.int32)
-
     def get_label(self, idx):
         root_split_path = self.root_split_path
         if self.use_sorted_imageset:
             root_split_path = self.root_path / self.lidar_idx_subdir_map[idx]
 
-        label_file = root_split_path / 'label_0' / ('%s.txt' % idx)
-        assert label_file.exists(), "Label file %s does not exist" % label_file
+        label_file = root_split_path / 'label_2' / f'{idx}.txt'  # 여기!
+        assert label_file.exists(), f"Label file {label_file} does not exist"
         return object3d_kitti.get_objects_from_label(label_file)
 
     def get_calib(self, idx):
@@ -668,8 +685,11 @@ if __name__ == '__main__':
                 'Skateboard',
                 'WaterFountain'
             ],
-            data_path=ROOT_DIR / 'data' / 'coda128_allclass_full',
-            save_path=ROOT_DIR / 'data' / 'coda128_allclass_full',
+            #data_path=ROOT_DIR / 'data' / 'coda128_allclass_full',
+            #save_path=ROOT_DIR / 'data' / 'coda128_allclass_full',
+            data_path=Path(dataset_cfg.DATA_PATH),
+            save_path=Path(dataset_cfg.DATA_PATH),
+
         )
 """
 Full Class List
