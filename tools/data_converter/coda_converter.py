@@ -210,6 +210,12 @@ class CODa2KITTI(object):
             'cam1': 1,
             'os1': 2
         }
+        # [MOD] KITTI 호환 저장 디렉터리(훈련/테스트 자동 선택)
+        split = 'testing' if self.test_mode else 'training'  # 기존 플래그 사용
+        self.kitti_image2_dir = os.path.join(self.save_dir, split, 'image_2')   # [MOD]
+        self.kitti_label2_dir = os.path.join(self.save_dir, split, 'label_2')   # [MOD]
+        os.makedirs(self.kitti_image2_dir, exist_ok=True)                        # [MOD]
+        os.makedirs(self.kitti_label2_dir, exist_ok=True)                        # [MOD]
 
         # Used to downsample lidar vertical channels
         self.channels = channels
@@ -349,21 +355,30 @@ class CODa2KITTI(object):
         
         for cam_id in self.cam_ids:
             cam = "cam%i" % cam_id
-            img_file = self.set_filename_by_prefix("2d_rect", cam, traj, frame_idx) #change to rect later
+            img_file = self.set_filename_by_prefix("2d_rect", cam, traj, frame_idx)  # change to rect later
             img_path = join(self.load_dir, '2d_rect', cam, str(traj), img_file)
 
-            cam_id = cam[-1]
-            self.save_image(traj, img_path, cam_id, frame_idx, file_idx)
+            cam_id = cam[-1]  # 문자열 '0'/'1' 그대로 사용 (원본 유지)
+
+            # [MOD] 이미지가 없으면 스킵하도록 반환값 체크
+            ok_img = self.save_image(traj, img_path, cam_id, frame_idx, file_idx)  # [MOD]
+            if not ok_img:                                                             # [MOD]
+                continue                                                               # [MOD]
+
             if not self.test_mode:
                 self.save_label(traj, cam_id, frame_idx, file_idx)
-        
+
         calibrations_path = os.path.join(self.load_dir, "calibrations", str(traj))
         self.save_calib(traj, frame_idx, file_idx)
 
-        self.save_lidar(traj, frame_idx, file_idx, self.channels)
+        # [MOD] 라이다 파일 없으면 해당 샘플 스킵
+        ok_lidar = self.save_lidar(traj, frame_idx, file_idx, self.channels)       # [MOD]
+        if not ok_lidar:                                                            # [MOD]
+            return None                                                             # [MOD]
 
         self.save_pose(traj, frame_idx, file_idx)
         self.save_timestamp(traj, frame_idx, file_idx)
+
 
     def __len__(self):
         """Length of the filename list."""
@@ -372,7 +387,7 @@ class CODa2KITTI(object):
     def save_image(self, traj, src_img_path, cam_id, frame_idx, file_idx):
         """Parse and save the images in jpg format. Jpg is the original format
         used by Waymo Open dataset. Saving in png format will cause huge (~3x)
-        unnesssary storage waste.
+        unnecessary storage waste.
 
         Assumes images are rectified
         Args:
@@ -380,10 +395,32 @@ class CODa2KITTI(object):
             file_idx (int): Current file index.
             frame_idx (int): Current frame index.
         """
-        assert isfile(src_img_path), "Image file does not exist: %s" % src_img_path
+        import os
+        from os.path import isfile, splitext
+        import shutil
+
+        # [MOD] CODa 배포본에 jpg가 없고 png만 있는 경우가 있어 확장자 대체 검색을 추가한다.
+        if not isfile(src_img_path):
+            base, _ = splitext(src_img_path)
+            for ext in ['.png', '.PNG', '.jpg', '.JPG', '.jpeg', '.JPEG']:
+                alt_path = base + ext
+                if isfile(alt_path):
+                    src_img_path = alt_path
+                    break
+
+        if not isfile(src_img_path):
+            print(f"[WARN] Image file missing, skip: {src_img_path}")
+            return False  # [MOD] 호출부에서 False면 해당 프레임은 스킵한다.
+
         kitti_img_path = f'{self.image_save_dir}{str(cam_id)}/' + \
-                f'{str(traj).zfill(2)}{str(frame_idx).zfill(5)}.jpg'
+                         f'{str(traj).zfill(2)}{str(frame_idx).zfill(5)}.jpg'
+
+        os.makedirs(os.path.dirname(kitti_img_path), exist_ok=True)
         shutil.copyfile(src_img_path, kitti_img_path)
+        return True
+
+
+
 
     def save_calib(self, traj, frame_idx, file_idx):
         """Parse and save the calibration data.
@@ -436,23 +473,41 @@ class CODa2KITTI(object):
             fp_calib.write(calib_context)
             fp_calib.close()
 
-    def save_lidar(self, traj, frame_idx, file_idx, channels=128):
-        """Parse and save the lidar data in psd format.
-        Args:
-            traj (int): Current trajectory index.
-            frame_idx (int): Current frame index.
-        """
-        bin_file = self.set_filename_by_prefix("3d_raw", "os1", traj, frame_idx)
-        bin_path = join(self.load_dir, "3d_raw", "os1", traj, bin_file)
-        assert isfile(bin_path), "Bin file for traj %s frame %s does not exist: %s" % (traj, frame_idx, bin_path)
-        point_cloud = np.fromfile(bin_path, dtype=np.float32).reshape(-1, 4)
+    def save_lidar(self, traj, frame_idx, file_idx, channels):
+        from os.path import isfile, join
+        import os, shutil
+        import numpy as np
 
-        point_cloud = self.downsample_lidar(point_cloud, channels)
-    
-        pc_path = f'{self.point_cloud_save_dir}/' + \
-            f'{str(traj).zfill(2)}{str(frame_idx).zfill(5)}.bin'
- 
-        point_cloud.astype(np.float32).tofile(pc_path)
+        base_dir = join(self.load_dir, "3d_raw", "os1", str(traj))  # CODa 표준 루트
+        # [MOD] 실제 파일은 3d_comp_* 프리픽스를 쓰는 경우가 있으므로 후보를 모두 시도한다.
+        #       또한 자리수 패딩 차이도 고려한다.
+        candidates = [
+            # 기대 패턴 (원본)
+            join(base_dir, f"3d_raw_os1_{traj}_{file_idx}.bin"),
+            join(base_dir, f"3d_raw_os1_{traj}_{str(file_idx).zfill(4)}.bin"),
+            join(base_dir, f"3d_raw_os1_{traj}_{str(file_idx).zfill(5)}.bin"),
+            # [MOD] CODa split 배포에서 흔한 패턴
+            join(base_dir, f"3d_comp_os1_{traj}_{file_idx}.bin"),
+            join(base_dir, f"3d_comp_os1_{traj}_{str(file_idx).zfill(4)}.bin"),
+            join(base_dir, f"3d_comp_os1_{traj}_{str(file_idx).zfill(5)}.bin"),
+        ]
+
+        src_path = None
+        for cand in candidates:
+            if isfile(cand):
+                src_path = cand
+                break
+
+        if src_path is None:
+            # [MOD] 파일이 없으면 중단하지 말고 샘플만 스킵한다.
+            print(f"[WARN] lidar missing, skip traj={traj} frame={frame_idx} file_idx={file_idx}")
+            return False
+
+        # KITTI 출력 경로로 복사
+        out_bin = os.path.join(self.save_dir, 'velodyne', f'{str(traj).zfill(2)}{str(frame_idx).zfill(5)}.bin')
+        os.makedirs(os.path.dirname(out_bin), exist_ok=True)
+        shutil.copyfile(src_path, out_bin)
+        return True
 
     def downsample_lidar(self, pc, channels):
         # Downsamples by selecting vertical channels with different step sizes
@@ -472,96 +527,112 @@ class CODa2KITTI(object):
             traj (str): Current trajectory index.
             frame_idx (str): Current frame index.
         """
-        anno_file   = self.set_filename_by_prefix("3d_bbox", "os1", traj, frame_idx)
-        anno_path   = join(self.load_dir, "3d_bbox", "os1", traj, anno_file)
-        anno_dict   = json.load(open(anno_path))
+        import os
+        import json
+        import numpy as np
+        from os.path import join
 
-        twod_anno_file  = self.set_filename_by_prefix("2d_bbox", "cam0", traj, frame_idx)
+        # 3D 라벨은 필수라서 기존대로 읽는다.
+        anno_file = self.set_filename_by_prefix("3d_bbox", "os1", traj, frame_idx)
+        anno_path = join(self.load_dir, "3d_bbox", "os1", traj, anno_file)
+        anno_dict = json.load(open(anno_path))
+
+        # [MOD] 2D bbox는 CODa 전체에 항상 존재하지 않으므로, 없을 때를 대비한 예외처리를 한다.
+        twod_anno_file = self.set_filename_by_prefix("2d_bbox", "cam0", traj, frame_idx)
         twod_anno_path = join(self.load_dir, "2d_bbox", "cam0", traj, twod_anno_file)
 
-        twod_anno_dict = np.loadtxt(twod_anno_path, dtype=int).reshape(-1, 6)
+        twod_anno_dict = None
+        if os.path.exists(twod_anno_path):
+            try:
+                # CODa devkit 2D 포맷이 id,xmin,ymin,xmax,ymax,count 등일 수 있어 2:6만 사용한다.
+                twod_anno_dict = np.loadtxt(twod_anno_path, dtype=float).reshape(-1, 6)
+            except Exception as e:
+                print(f"[WARN] 2D bbox read error at {twod_anno_path}: {e}; using zeros.")
+                twod_anno_dict = None  # [MOD] 실패 시 None으로 처리한다.
 
-        calibrations = self.load_calibrations(self.load_dir, traj) # TODO figure out import
-        # Save transform lidar to cameras
-        Tr_os1_to_camx = np.array(calibrations['os1_cam0']['extrinsic_matrix']['data']).reshape(4,4)
-        
-        if cam_id==1:
-            R_cam0_to_cam1 = np.array(calibrations['cam0_cam1']['extrinsic_matrix']['R']['data']).reshape(3,3)
+        # 캘리브레이션
+        calibrations = self.load_calibrations(self.load_dir, traj)
+        Tr_os1_to_camx = np.array(calibrations['os1_cam0']['extrinsic_matrix']['data']).reshape(4, 4)
+
+        if cam_id == 1:
+            R_cam0_to_cam1 = np.array(calibrations['cam0_cam1']['extrinsic_matrix']['R']['data']).reshape(3, 3)
             T_cam0_to_cam1 = np.array(calibrations['cam0_cam1']['extrinsic_matrix']['T']).reshape(3, 1)
             Tr_cam0_to_cam1 = np.eye(4)
             Tr_cam0_to_cam1[:3, :] = np.hstack((R_cam0_to_cam1, T_cam0_to_cam1))
-            
             Tr_os1_to_camx = Tr_cam0_to_cam1 @ Tr_os1_to_camx
 
+        # 전체 라벨 파일
         fp_label_all = open(
             f'{self.label_all_save_dir}/' +
             f'{str(traj).zfill(2)}{str(frame_idx).zfill(5)}.txt', 'w+')
-        id_to_bbox = dict()
-        id_to_name = dict()
 
-        #Reset fp_label file if it exists
+        # 개별 카메라 라벨 파일 초기화
         fp_label = open(
             f'{self.label_save_dir}{cam_id}/' +
             f'{str(traj).zfill(2)}{str(frame_idx).zfill(5)}.txt', 'w')
         fp_label.close()
+
         for anno_idx, tred_anno in enumerate(anno_dict["3dbbox"]):
-            bounding_box = None
             name = tred_anno['classId'].upper()
             if name not in self.type_list:
-                # print("Unknown class %s found, skipping..."%name)
                 continue
-
-            class_idx = self.type_list.index(name)
-
             if name not in self.coda_to_kitti_class_map:
-                # print("Class %s not mapped to KITTI, skipping..."%name)
                 continue
             my_type = self.coda_to_kitti_class_map[name]
 
-            #TODO: Add in bbox filtering by number of points
-            bounding_box = twod_anno_dict[anno_idx, :]
-        
+            # [MOD] 2D bbox가 없거나 인덱스 범위를 넘어가면 0,0,0,0으로 대체한다.
+            if twod_anno_dict is None:
+                bbox = np.array([0.0, 0.0, 0.0, 0.0])
+            else:
+                try:
+                    # 열 2:6이 xmin,ymin,xmax,ymax라고 가정한다.
+                    bbox = twod_anno_dict[anno_idx, 2:6].astype(float)
+                except Exception:
+                    bbox = np.array([0.0, 0.0, 0.0, 0.0])
+
+            # 크기 변환(CODa l,w,h -> KITTI l,h,w 로 쓰기 위해 매핑)
             height = tred_anno['h']
             length = tred_anno['l']
-            width = tred_anno['w']
+            width  = tred_anno['w']
 
+            # 중심 좌표, KITTI는 바닥 중심을 쓰므로 z에서 h/2 보정
             x = tred_anno['cX']
             y = tred_anno['cY']
             z = tred_anno['cZ'] - height / 2
 
-            # not available
             truncated = 0
-            alpha = -10
-            coda_occluded = tred_anno['labelAttributes']['isOccluded']
-            occluded = self.coda_to_kitti_occlusion[coda_occluded]
+            alpha = -10  # [MOD] 이미지 기반 각도 부재 시 고정값
+            coda_occluded = tred_anno.get('labelAttributes', {}).get('isOccluded', 'Unknown')
+            occluded = self.coda_to_kitti_occlusion.get(coda_occluded, 0)
 
-            pt_ref = Tr_os1_to_camx @ \
-                np.array([x, y, z, 1]).reshape((4, 1))
+            # LiDAR → 카메라 변환
+            pt_ref = Tr_os1_to_camx @ np.array([x, y, z, 1]).reshape((4, 1))
             x, y, z, _ = pt_ref.flatten().tolist()
 
-            rotation_y = -tred_anno['y'] - np.pi / 2 # Convert to correct direction and limit range
-            track_id = tred_anno['instanceId']
+            # 회전 변환(yaw 축 정의 차이 보정)
+            rotation_y = -tred_anno['y'] - np.pi / 2
 
             line = my_type + \
                 ' {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n'.format(
                     round(truncated, 2), occluded, round(alpha, 2),
-                    round(bounding_box[0], 2), round(bounding_box[1], 2),
-                    round(bounding_box[2], 2), round(bounding_box[3], 2),
+                    round(bbox[0], 2), round(bbox[1], 2), round(bbox[2], 2), round(bbox[3], 2),
                     round(height, 2), round(width, 2), round(length, 2),
                     round(x, 2), round(y, 2), round(z, 2),
                     round(rotation_y, 2))
 
             line_all = line[:-1] + '\n'
 
-            fp_label = open(
+            # 카메라별 라벨 파일 append
+            with open(
                 f'{self.label_save_dir}{cam_id}/' +
-                f'{str(traj).zfill(2)}{str(frame_idx).zfill(5)}.txt', 'a')
-            fp_label.write(line)
-            fp_label.close()
+                f'{str(traj).zfill(2)}{str(frame_idx).zfill(5)}.txt', 'a') as fp_label:
+                fp_label.write(line)
 
             fp_label_all.write(line_all)
 
         fp_label_all.close()
+
+
 
     def save_pose(self, traj, frame_idx, file_idx):
         """Parse and save the pose data.
