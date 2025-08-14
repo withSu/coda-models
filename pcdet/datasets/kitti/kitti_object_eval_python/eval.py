@@ -4,6 +4,15 @@ import numba
 import numpy as np
 
 from .rotate_iou import rotate_iou_gpu_eval
+# Prefer CPU IoU if available (reduces VRAM), fallback to GPU
+import importlib
+try:
+    _cpu_mod = importlib.import_module('.rotate_iou_cpu', package=__package__)
+    rotate_iou_cpu_eval = getattr(_cpu_mod, 'rotate_iou_cpu_eval', None)
+    _HAS_ROTATE_IOU_CPU = rotate_iou_cpu_eval is not None
+except Exception:
+    rotate_iou_cpu_eval = None
+    _HAS_ROTATE_IOU_CPU = False
 import copy #arthur
 
 @numba.jit
@@ -32,7 +41,7 @@ def clean_data(gt_anno, dt_anno, current_class, difficulty):
     #allclass
     # CLASS_NAMES = ['Pedestrian'] # FOR JRDB Only
 
-    # For non JRDB
+    # For non JRDB - 3 class model uses indices 0,1,2 for Car, Pedestrian, Cyclist
     CLASS_NAMES = [ 'Car', 'Pedestrian', 'Cyclist', 'Motorcycle', 'Scooter', 'Tree', 'TrafficSign', 'Canopy', 'TrafficLight', 'BikeRack', 'Bollard', 'ConstructionBarrier', 'ParkingKiosk', 'Mailbox', 'FireHydrant','FreestandingPlant', 'Pole', 'InformationalSign', 'Door', 'Fence', 'Railing', 'Cone', 'Chair', 'Bench',
     'Table', 'TrashCan', 'NewspaperDispenser', 'RoomLabel', 'Stanchion', 'SanitizerDispenser',
     'CondimentDispenser', 'VendingMachine', 'EmergencyAidKit', 'FireExtinguisher', 'Computer', 'Television',
@@ -43,22 +52,43 @@ def clean_data(gt_anno, dt_anno, current_class, difficulty):
     MAX_OCCLUSION = [0, 1, 2]
     MAX_TRUNCATION = [0.15, 0.3, 0.5]
     dc_bboxes, ignored_gt, ignored_dt = [], [], []
-    current_cls_name = CLASS_NAMES[current_class].lower()
+    
+    # Fix for CODa 3-class evaluation
+    # current_class is index 0,1,2 which should map to Car, Pedestrian, Cyclist
+    if current_class < len(CLASS_NAMES):
+        current_cls_name = CLASS_NAMES[current_class]
+    else:
+        # Fallback for debugging
+        print(f"[WARNING] current_class {current_class} out of range, using index mapping")
+        if current_class == 0:
+            current_cls_name = 'Car'
+        elif current_class == 1:
+            current_cls_name = 'Pedestrian'
+        elif current_class == 2:
+            current_cls_name = 'Cyclist'
+        else:
+            current_cls_name = 'Unknown'
     num_gt = len(gt_anno["name"])
     num_dt = len(dt_anno["name"])
     num_valid_gt = 0
+    
+    # Debug output
+    debug_gt_count = sum(1 for name in gt_anno["name"] if name == current_cls_name)
+    debug_dt_count = sum(1 for name in dt_anno["name"] if name == current_cls_name)
+    if debug_gt_count > 0 or debug_dt_count > 0:
+        print(f"[DEBUG] Class {current_cls_name}: GT={debug_gt_count}, DT={debug_dt_count}")
 
     for i in range(num_gt):
         bbox = gt_anno["bbox"][i]
-        gt_name = gt_anno["name"][i].lower()
+        gt_name = gt_anno["name"][i]  # 소문자 변환 제거
         height = bbox[3] - bbox[1]
         valid_class = -1
         if (gt_name == current_cls_name):
             valid_class = 1
-        elif (current_cls_name == "Pedestrian".lower()
-              and "Person_sitting".lower() == gt_name):
+        elif (current_cls_name == "Pedestrian"
+              and "Person_sitting" == gt_name):
             valid_class = 0
-        elif (current_cls_name == "Car".lower() and "Van".lower() == gt_name):
+        elif (current_cls_name == "Car" and "Van" == gt_name):
             valid_class = 0
         else:
             valid_class = -1
@@ -80,7 +110,7 @@ def clean_data(gt_anno, dt_anno, current_class, difficulty):
             dc_bboxes.append(gt_anno["bbox"][i])
 
     for i in range(num_dt):
-        if (dt_anno["name"][i].lower() == current_cls_name):
+        if (dt_anno["name"][i] == current_cls_name):  # 소문자 변환 제거
             valid_class = 1
         else:
             valid_class = -1
@@ -126,7 +156,10 @@ def image_box_overlap(boxes, query_boxes, criterion=-1):
 
 
 def bev_box_overlap(boxes, qboxes, criterion=-1):
-    riou = rotate_iou_gpu_eval(boxes, qboxes, criterion)
+    if _HAS_ROTATE_IOU_CPU:
+        riou = rotate_iou_cpu_eval(boxes, qboxes, criterion)
+    else:
+        riou = rotate_iou_gpu_eval(boxes, qboxes, criterion)
     return riou
 
 
@@ -601,13 +634,16 @@ def do_eval(gt_annos,
             compute_aos=False,
             PR_detail_dict=None):
 
+    # Chunk IoU computations to reduce VRAM usage
+    NUM_PARTS = 50  # adjust (e.g., 50~200) based on available VRAM
+
     # min_overlaps: [num_minoverlap, metric, num_class]
     difficultys = [0, 1, 2]
     ret = eval_class(gt_annos, dt_annos, current_classes, difficultys, 0,
-                     min_overlaps, compute_aos)
+                     min_overlaps, compute_aos, NUM_PARTS)
     # ret: [num_class, num_diff, num_minoverlap, num_sample_points]
     mAP_bbox = get_mAP(ret["precision"])
-    mAP_bbox_R40 = get_mAP_R40(ret["precision"])
+    mAP_bbox_R40 = get_mAP_R40(ret["precision"])  
 
     if PR_detail_dict is not None:
         PR_detail_dict['bbox'] = ret['precision']
@@ -615,23 +651,23 @@ def do_eval(gt_annos,
     mAP_aos = mAP_aos_R40 = None
     if compute_aos:
         mAP_aos = get_mAP(ret["orientation"])
-        mAP_aos_R40 = get_mAP_R40(ret["orientation"])
+        mAP_aos_R40 = get_mAP_R40(ret["orientation"]) 
 
         if PR_detail_dict is not None:
             PR_detail_dict['aos'] = ret['orientation']
     
     ret = eval_class(gt_annos, dt_annos, current_classes, difficultys, 1,
-                     min_overlaps)
+                     min_overlaps, False, NUM_PARTS)
     mAP_bev = get_mAP(ret["precision"])
-    mAP_bev_R40 = get_mAP_R40(ret["precision"])
+    mAP_bev_R40 = get_mAP_R40(ret["precision"])  
 
     if PR_detail_dict is not None:
         PR_detail_dict['bev'] = ret['precision']
 
     ret = eval_class(gt_annos, dt_annos, current_classes, difficultys, 2,
-                     min_overlaps)
+                     min_overlaps, False, NUM_PARTS)
     mAP_3d = get_mAP(ret["precision"])
-    mAP_3d_R40 = get_mAP_R40(ret["precision"])
+    mAP_3d_R40 = get_mAP_R40(ret["precision"])  
 
     if PR_detail_dict is not None:
         PR_detail_dict['3d'] = ret['precision']
@@ -772,6 +808,11 @@ def get_official_eval_result(gt_annos, dt_annos, current_classes, PR_detail_dict
             current_classes_int.append(name_to_class[curcls])
         else:
             current_classes_int.append(curcls)
+    
+    print(f"[DEBUG] current_classes: {current_classes}")
+    print(f"[DEBUG] current_classes_int: {current_classes_int}")
+    print(f"[DEBUG] class_to_name: {class_to_name}")
+    
     current_classes = current_classes_int
     min_overlaps = min_overlaps[:, :, current_classes]
     result = ''

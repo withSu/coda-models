@@ -5,6 +5,9 @@ import argparse
 import datetime
 import glob
 
+# Default to W&B disabled unless explicitly enabled in config/env
+os.environ.setdefault("WANDB_DISABLED", "true")
+
 import torch
 import torch.nn as nn
 from tensorboardX import SummaryWriter
@@ -21,6 +24,14 @@ from train_utils.train_utils import train_model
 from train_utils.train_st_utils import train_model_st
 
 import wandb
+
+# Helper: decide if wandb should be used in this run
+def _use_wandb(cfg):
+    ft = cfg.get('FINETUNE', None)
+    # Use W&B only if FINETUNE.WANDB is True and WANDB_DISABLED env is not true/1/yes
+    env_off = os.getenv("WANDB_DISABLED", "false").lower() in ("true", "1", "yes")
+    return bool(ft and getattr(ft, 'WANDB', False)) and (not env_off)
+
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -66,6 +77,11 @@ def main():
 
     def train_loop(init_launch=True, learning_rate=None, optimizer=None):
         args, cfg = parse_config()
+        # decide wandb usage once per run
+        use_wandb = _use_wandb(cfg)
+        if not use_wandb:
+            # ensure submodules' wandb.log calls are ignored entirely
+            os.environ["WANDB_DISABLED"] = "true"
         # Modify cfg parameters from search
         if learning_rate!=None:
             cfg.OPTIMIZATION.LR = learning_rate
@@ -242,7 +258,8 @@ def main():
 
         logger.info('**********************End training %s/%s(%s)**********************\n\n\n'
                     % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-        wandb.finish()
+        if use_wandb:
+            wandb.finish()
 
         logger.info('**********************Start evaluation %s/%s(%s)**********************' %
                     (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
@@ -305,18 +322,18 @@ def main():
                 # Only evaluate the last args.num_epochs_to_eval epochs
                 args.start_epoch = max(args.epochs - args.num_epochs_to_eval, 0)
 
-            ft_cfg=cfg.get('FINETUNE', None)
-            if ft_cfg is not None:
-                wandb_name = "eval%s_lr%0.6f_opt%s_rank%i_eval_all" % (DATA_CONFIG_TAR_RES, cfg.OPTIMIZATION.LR , cfg.OPTIMIZATION.OPTIMIZER, cfg.LOCAL_RANK)
+            ft_cfg = cfg.get('FINETUNE', None)
+            # Use the same wandb flag during evaluation
+            if use_wandb:
+                wandb_name = "eval%s_lr%0.6f_opt%s_rank%i_eval_all" % (
+                    DATA_CONFIG_TAR_RES, cfg.OPTIMIZATION.LR, cfg.OPTIMIZATION.OPTIMIZER, cfg.LOCAL_RANK
+                )
                 wandb.init(
-                    # set the wandb project where this run will be logged
                     project=ft_cfg.WANDB_NAME,
-                    
-                    # track hyperparameters and run metadata
                     config={
                         "learning_rate": cfg.OPTIMIZATION.LR,
                         "optimizer": cfg.OPTIMIZATION.OPTIMIZER,
-                        "architecture": "PVRCNN",
+                        "architecture": "SECOND",  # adjust to current model name if needed
                         "dataset": "CODa",
                         "epochs": args.epochs,
                         "name": wandb_name
@@ -324,11 +341,12 @@ def main():
                     name=wandb_name
                 )
 
-                repeat_eval_ckpt(
-                    model.module if dist_train else model,
-                    test_loader, args, eval_output_dir, logger, ckpt_dir,
-                    dist_test=dist_train, ft_cfg=cfg.get('FINETUNE', None)
-                )
+            repeat_eval_ckpt(
+                model.module if dist_train else model,
+                test_loader, args, eval_output_dir, logger, ckpt_dir,
+                dist_test=dist_train, ft_cfg=cfg.get('FINETUNE', None)
+            )
+            if use_wandb:
                 wandb.finish()
                     
                 

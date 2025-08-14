@@ -1,0 +1,9 @@
+Sample 1 Detection Results
+==================================================
+Points: 130323
+Predictions: 2
+Ground Truth: 7
+
+Prediction Details:
+  [0] Pedestrian: score=0.335, pos=(-1.2, 1.5, 0.9), size=(1.1, 0.9, 1.8)
+  [1] Pedestrian: score=0.312, pos=(-1.0, -0.1, 0.8), size=(0.8, 0.7, 1.6)

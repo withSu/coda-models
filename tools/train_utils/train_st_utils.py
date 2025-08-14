@@ -12,6 +12,16 @@ from .train_utils import save_checkpoint, checkpoint_state
 
 import wandb
 
+# Safe W&B logger
+
+def _wandb_log_safe(data: dict):
+    if os.environ.get("WANDB_DISABLED", "").lower() in ("1", "true", "t", "yes", "y"):
+        return
+    if getattr(wandb, "run", None) is None:
+        return
+    wandb.log(data)
+
+
 def train_one_epoch_st(model, optimizer, source_reader, target_loader, model_func, lr_scheduler,
                        accumulated_iter, optim_cfg, rank, tbar, total_it_each_epoch,
                        dataloader_iter, tb_log=None, leave_pbar=False, ema_model=None, cur_epoch=None,
@@ -56,7 +66,7 @@ def train_one_epoch_st(model, optimizer, source_reader, target_loader, model_fun
             loss, tb_dict, disp_dict = model_func(model, source_batch)
 
             if ft_cfg is not None:
-                wandb.log({"loss": loss, "lr": cur_lr, "iter": cur_it})
+                _wandb_log_safe({"loss": loss, "lr": cur_lr, "iter": cur_it})
             loss = cfg.SELF_TRAIN.SRC.get('LOSS_WEIGHT', 1.0) * loss
             loss.backward()
             loss_meter.update(loss.item())

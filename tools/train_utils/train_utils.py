@@ -1,11 +1,33 @@
+# W&B full disable: inject no-op module before any other imports
+import os, sys, types
+
+# Disable when env says so (true/1/yes)
+if os.getenv("WANDB_DISABLED", "false").lower() in ("true", "1", "yes"):
+    class _WBNoop(types.SimpleNamespace):
+        def init(self, *a, **k): return self
+        def finish(self, *a, **k): pass
+        def log(self, *a, **k): pass
+        def watch(self, *a, **k): pass
+        def config(self, *a, **k): pass
+    sys.modules["wandb"] = _WBNoop()
+    os.environ["WANDB_SILENT"] = "true"  # silence any output just in case
+
+# Provide a safe logging helper in case WANDB is active but not initialized
+import wandb
+
+def _wandb_log_safe(data: dict):
+    if os.environ.get("WANDB_DISABLED", "").lower() in ("1", "true", "t", "yes", "y"):
+        return
+    if getattr(wandb, "run", None) is None:
+        return
+    wandb.log(data)
+
 import glob
 import os
 
 import torch
 import tqdm
 from torch.nn.utils import clip_grad_norm_
-
-import wandb
 
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False, ft_cfg=None):
@@ -39,7 +61,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         loss, tb_dict, disp_dict = model_func(model, batch)
 
         if ft_cfg is not None:
-            wandb.log({"loss": loss, "lr": cur_lr, "iter": cur_it})
+            _wandb_log_safe({"loss": loss, "lr": cur_lr, "iter": cur_it})
 
         loss.backward()
         clip_grad_norm_(model.parameters(), optim_cfg.GRAD_NORM_CLIP)

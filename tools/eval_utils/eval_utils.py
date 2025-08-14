@@ -10,6 +10,16 @@ from pcdet.utils import common_utils
 from pcdet.models.model_utils.dsnorm import set_ds_target
 
 import wandb
+import os
+
+# Safe W&B logging wrapper
+def wandb_log_safe(data: dict):
+    # Skip logging when WANDB is disabled or run is not initialized
+    if os.environ.get("WANDB_DISABLED", "").lower() in ("1", "true", "t", "yes", "y"):
+        return
+    if getattr(wandb, "run", None) is None:
+        return
+    wandb.log(data)
 
 def statistics_info(cfg, ret_dict, metric, disp_dict):
     for cur_thresh in cfg.MODEL.POST_PROCESSING.RECALL_THRESH_LIST:
@@ -154,7 +164,7 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
         #         print("new result dict ", result_dict)
             # wandb_dict[wkey] = result_dict[wkey]
         print("Logging results to wandb...")
-        wandb.log(result_dict)
+        wandb_log_safe(result_dict)
 
     logger.info(result_str)
     ret_dict.update(result_dict)
