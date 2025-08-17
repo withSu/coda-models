@@ -123,6 +123,8 @@ def main():
                         help='Loop through dataset continuously')
     parser.add_argument('--start_idx', type=int, default=0,
                         help='Starting sample index')
+    parser.add_argument('--sorted', action='store_true', default=True,
+                        help='Use sorted sequence order for CODa dataset')
     args = parser.parse_args()
     
     # Setup config
@@ -130,17 +132,39 @@ def main():
     cfg.TAG = Path(args.cfg_file).stem
     cfg.EXP_GROUP_PATH = '/'.join(args.cfg_file.split('/')[1:-1])
     
-    # Build dataloader
-    test_set, test_loader, sampler = build_dataloader(
+    # Build dataset with sorted option for CODa
+    from pcdet.datasets.coda.coda_dataset import CODataset
+    
+    test_set = CODataset(
         dataset_cfg=cfg.DATA_CONFIG,
         class_names=cfg.CLASS_NAMES,
-        batch_size=1,
-        dist=False,
-        workers=4,
-        logger=None,
         training=False,
-        total_epochs=1
+        root_path=Path(cfg.DATA_CONFIG.DATA_PATH),  # Convert to Path object
+        logger=None,
+        use_sorted_imageset=False  # Don't use sorted imageset to avoid KeyError
     )
+    
+    # Sort the dataset infos by frame ID to ensure sequence order
+    if args.sorted:
+        # Sort coda_infos by lidar_idx to maintain sequence order
+        test_set.coda_infos = sorted(test_set.coda_infos, 
+                                     key=lambda x: int(x['point_cloud']['lidar_idx']))
+    
+    # Build dataloader without shuffle
+    from torch.utils.data import DataLoader
+    test_loader = DataLoader(
+        test_set, 
+        batch_size=1,
+        pin_memory=True,
+        num_workers=4,
+        shuffle=False,  # Important: no shuffle for sequence order
+        collate_fn=test_set.collate_batch,
+        drop_last=False,
+        sampler=None,
+        timeout=0
+    )
+    
+    sampler = None
     
     # Build model
     model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
@@ -239,8 +263,11 @@ def main():
                 # Create BEV image
                 img = create_bev_image(points, pred_boxes, gt_boxes)
                 
-                # Add info text
+                # Add info text with frame ID
+                frame_id = batch_dict.get('frame_id', [None])[0]
                 info_text = f"Frame: {frame_idx}/{len(test_loader)} | "
+                if frame_id is not None:
+                    info_text += f"ID: {frame_id} | "
                 info_text += f"Points: {len(points)} | "
                 info_text += f"Pred: {len(pred_boxes)} | "
                 info_text += f"GT: {len(gt_boxes) if gt_boxes is not None else 0} | "
