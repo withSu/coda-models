@@ -71,3 +71,44 @@ Thank you to the authors of ST3D++ or OpenPCDet for an awesome codebase!
     year={2020}
 }
 ```
+
+## Training and Visualization
+
+### Training
+To train the model with CODa dataset:
+```bash
+torchrun --nproc_per_node=1 tools/train.py \
+  --launcher pytorch \
+  --cfg_file tools/cfgs/da_models/second_coda32_oracle_3class.yaml \
+  --batch_size 1
+```
+
+### Sequence Visualization
+To visualize detection results in sequence order:
+```bash
+python visualize_realtime.py \
+  --ckpt output/cfgs/da_models/second_coda32_oracle_3class/defaultLR0.010000OPTadam_onecycle/ckpt/checkpoint_epoch_22.pth \
+  --delay 200 \
+  --sorted
+```
+
+Controls during visualization:
+- `Q/ESC`: Quit
+- `SPACE`: Pause/Resume
+- `S`: Slower playback
+- `F`: Faster playback
+- `R`: Reset to beginning
+- `N`: Next frame (when paused)
+
+## Performance Results
+
+Final evaluation results on CODa validation set (epoch 22):
+
+| Class | IoU Standard (Actual Value) | 3D AP (%) | BEV AP (%) |
+| --- | --- | --- | --- |
+| **Car** | Strict Standard (0.70) | **29.81** | **51.70** |
+|  | Lenient Standard (0.50) | 66.19 | 67.79 |
+| **Pedestrian** | Strict Standard (0.50) | **68.89** | **72.64** |
+|  | Lenient Standard (0.25) | 81.51 | 81.71 |
+| **Cyclist** | Strict Standard (0.50) | **18.56** | **23.45** |
+|  | Lenient Standard (0.25) | 35.54 | 37.13 |
